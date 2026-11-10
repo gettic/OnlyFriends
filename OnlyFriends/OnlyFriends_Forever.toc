@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: Only Friends
+## Notes: Declines party invites from players who are not your friends (WoW or Battle.net) or in your guild.
+## Version: 0.1.0-beta.1
+## SavedVariables: OnlyFriendsDB
+## IconTexture: Interface\FriendsFrame\UI-Toast-FriendOnlineIcon
+
+OnlyFriends.lua

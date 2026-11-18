@@ -23,6 +23,8 @@ local ART = {
 local frame = CreateFrame("Frame")
 local pending       -- invite waiting for the guild roster: { name, guid, token }
 local lastLine = {} -- inviter name -> time of last chat line
+local hintShown     -- the "(/of off to allow)" hint was shown this session
+local HINT = " (/of off to allow)"
 
 local function Print(msg)
 	print(PREFIX .. msg)
@@ -64,7 +66,10 @@ local function SafeCall(fn, ...)
 end
 
 local function GuildRosterMissing()
-	return IsInGuild and IsInGuild() and (GetNumGuildMembers() or 0) == 0
+	if not (IsInGuild and IsInGuild()) then return false end
+	-- Without GetNumGuildMembers we can't tell: go on and ask the guild checks directly.
+	if type(GetNumGuildMembers) ~= "function" then return false end
+	return (SafeCall(GetNumGuildMembers) or 0) == 0
 end
 
 -- true = friend/guild, false = not, nil = can't tell yet (guild roster not loaded).
@@ -123,6 +128,15 @@ local function PrintThrottled(name, msg)
 	if lastLine[key] and now - lastLine[key] < LINE_THROTTLE then return end
 	lastLine[key] = now
 	Print(msg)
+	return true
+end
+
+-- A "declined ..." line; the first one this session tells how to allow invites.
+local function PrintDeclined(name, what)
+	local hint = hintShown and "" or HINT
+	if PrintThrottled(name, "declined " .. what .. " from " .. NameText(name) .. hint .. ".") then
+		hintShown = true
+	end
 end
 
 local function DeclineInvite(name)
@@ -130,7 +144,7 @@ local function DeclineInvite(name)
 	HidePopups()
 	-- Blizzard may show its popup after our handler runs: close it again next frame.
 	C_Timer.After(0, HidePopups)
-	PrintThrottled(name, "declined a party invite from " .. NameText(name) .. ".")
+	PrintDeclined(name, "a party invite")
 end
 
 -- Not trusted: decline, or for Party Sync only print a note (its dialog is left alone).
@@ -146,7 +160,7 @@ end
 local function ResolvePending()
 	local p = pending
 	pending = nil
-	if not p then return end
+	if not p or not IsEnabled() then return end
 	if not p.questSessionActive and not InviteStillOpen() then return end -- already answered or cancelled
 	if IsTrusted(p.name, p.guid) then return end
 	Reject(p.name, p.questSessionActive)
@@ -175,6 +189,7 @@ end
 -- type is handled; SUGGEST (a group member suggests someone) is left alone.
 local INVITE_CONFIRMATION_REQUEST = LE_INVITE_CONFIRMATION_REQUEST or 1
 local joinWait -- token while join requests wait for the guild roster
+local joinFailed = {} -- request id -> true: couldn't decline, left to the user until the next event
 
 local function HideJoinPopup(guid)
 	if StaticPopup_Hide then StaticPopup_Hide("GROUP_INVITE_CONFIRMATION", guid) end
@@ -189,9 +204,9 @@ local function ProcessJoinRequests(final)
 		or type(RespondToInviteConfirmation) ~= "function" then return end
 
 	local seen = {}
-	for _ = 1, 40 do
+	for _ = 1, 500 do -- guard only: the loop ends when the queue is done
 		local ok, guid = pcall(GetNextPendingInviteConfirmation)
-		if not ok or not guid or seen[guid] then return end
+		if not ok or not guid or seen[guid] or joinFailed[guid] then return end
 		seen[guid] = true
 
 		local okInfo, confirmationType, name, playerGUID = pcall(GetInviteConfirmationInfo, guid)
@@ -223,13 +238,28 @@ local function ProcessJoinRequests(final)
 			if okNext and nextGuid == guid then responded = false end
 		end
 		if not responded then
-			PrintThrottled(name, "join request from " .. NameText(name) .. " (not a friend or guild member) - couldn't decline it, left for you to answer.")
+			joinFailed[guid] = true -- don't retry on our own re-check (no loop)
+			PrintThrottled(name, "couldn't decline a request to join your group from " .. NameText(name) .. " - please answer it yourself.")
 			return
 		end
 		HideJoinPopup(guid)
 		C_Timer.After(0, function() HideJoinPopup(guid) end)
-		PrintThrottled(name, "declined a request to join your group from " .. NameText(name) .. ".")
+		PrintDeclined(name, "a request to join your group")
 	end
+end
+
+-- Only the first request in the queue can be seen, and answering it fires no
+-- event: after any answer (the user's or ours) look at the queue again next frame.
+local joinRecheck
+if type(hooksecurefunc) == "function" and type(RespondToInviteConfirmation) == "function" then
+	hooksecurefunc("RespondToInviteConfirmation", function()
+		if joinRecheck then return end
+		joinRecheck = true
+		C_Timer.After(0, function()
+			joinRecheck = false
+			ProcessJoinRequests(false)
+		end)
+	end)
 end
 
 local function OnGuildRosterUpdate()
@@ -244,31 +274,39 @@ end
 -- minimap; the icon is greyed out with a red X while off.
 local button      -- built at PLAYER_LOGIN
 local tipOwner    -- frame the tooltip was last shown for
+local tipFromMenu -- that tooltip belongs to the addon-compartment menu
 
 local function ColorOf(c, r, g, b)
 	if type(c) == "table" and c.GetRGB then return c:GetRGB() end
 	return r, g, b
 end
 
-local function FillTooltip(tt)
+-- fromMenu: shown for the addon-compartment menu (no button to drag there).
+local function FillTooltip(tt, fromMenu)
 	tt:SetText("Only Friends", ColorOf(HIGHLIGHT_FONT_COLOR, 1, 1, 1))
 	if IsEnabled() then
 		tt:AddLine("On", ColorOf(GREEN_FONT_COLOR, 0.1, 1, 0.1))
-		tt:AddLine("Invites from players who aren't friends or guild members are declined.", ColorOf(NORMAL_FONT_COLOR, 1, 0.82, 0), true)
+		tt:AddLine("Declines invites and join requests from anyone not a friend or guildmate.", ColorOf(NORMAL_FONT_COLOR, 1, 0.82, 0), true)
 	else
 		tt:AddLine("Off", ColorOf(RED_FONT_COLOR, 1, 0.1, 0.1))
-		tt:AddLine("All invites are shown as normal.", ColorOf(NORMAL_FONT_COLOR, 1, 0.82, 0), true)
+		tt:AddLine("All invites and join requests are shown as normal.", ColorOf(NORMAL_FONT_COLOR, 1, 0.82, 0), true)
 	end
 	tt:AddLine(" ")
 	local r, g, b = ColorOf(GRAY_FONT_COLOR, 0.5, 0.5, 0.5)
-	tt:AddLine("Left-click: turn on/off", r, g, b)
-	tt:AddLine("Drag: move this button", r, g, b)
-	tt:AddLine("/of minimap: hide or show this button", r, g, b)
+	if fromMenu then
+		tt:AddLine("Click: turn on/off", r, g, b)
+		tt:AddLine("/of minimap: show or hide the minimap button", r, g, b)
+	else
+		tt:AddLine("Left-click: turn on/off", r, g, b)
+		tt:AddLine("Right-click: show status in chat", r, g, b)
+		tt:AddLine("Drag: move this button", r, g, b)
+		tt:AddLine("/of minimap: hide this button", r, g, b)
+	end
 end
 
 -- owner: the frame to anchor to; anything else (e.g. a menu that passes no
 -- frame) shows the tooltip at the cursor.
-local function ShowTooltip(owner)
+local function ShowTooltip(owner, fromMenu)
 	if type(owner) == "table" and owner.GetObjectType then
 		GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
 		tipOwner = owner
@@ -276,12 +314,14 @@ local function ShowTooltip(owner)
 		GameTooltip:SetOwner(UIParent, "ANCHOR_CURSOR")
 		tipOwner = UIParent
 	end
-	FillTooltip(GameTooltip)
+	tipFromMenu = fromMenu and true or false
+	FillTooltip(GameTooltip, tipFromMenu)
 	GameTooltip:Show()
 end
 
 local function HideTooltip()
 	tipOwner = nil
+	tipFromMenu = nil
 	GameTooltip:Hide()
 end
 
@@ -311,7 +351,7 @@ local function UpdateButton()
 	button.offMark:SetShown(not on)
 	button:SetShown(not OnlyFriendsDB.minimap.hide)
 	if tipOwner and GameTooltip:IsShown() and GameTooltip:GetOwner() == tipOwner then
-		FillTooltip(GameTooltip) -- SetText starts it afresh, the anchor stays
+		FillTooltip(GameTooltip, tipFromMenu) -- SetText starts it afresh, the anchor stays
 		GameTooltip:Show()
 	end
 end
@@ -320,11 +360,23 @@ local function SetEnabled(on)
 	InitDB()
 	OnlyFriendsDB.enabled = on and true or false
 	if on then
-		Print("on - invites from players who aren't friends or guild members are declined.")
+		Print("on - declines invites and join requests from anyone not a friend or guildmate.")
 	else
-		Print("off - all invites are shown as normal.")
+		Print("off - all invites and join requests are shown as normal.")
 	end
 	UpdateButton()
+end
+
+-- One status line (/of, right-click on the button).
+local function PrintStatus()
+	Print((IsEnabled() and "on" or "off") .. ". Type /of on, /of off or /of minimap (/of help for more).")
+end
+
+local function PrintHelp()
+	Print("commands:")
+	print("/of - show if it's on or off")
+	print("/of on, /of off, /of toggle - turn it on or off (all your characters)")
+	print("/of minimap - show or hide the minimap button")
 end
 
 local function OnDragUpdate()
@@ -344,7 +396,7 @@ local function CreateMinimapButton()
 	button:SetSize(31, 31)
 	button:SetFrameStrata("MEDIUM")
 	button:SetFrameLevel(8)
-	button:RegisterForClicks("LeftButtonUp")
+	button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	button:RegisterForDrag("LeftButton")
 	button:SetHighlightTexture(ART.highlight)
 
@@ -355,7 +407,17 @@ local function CreateMinimapButton()
 	button.background = bg
 
 	local icon = button:CreateTexture(nil, "ARTWORK")
-	if not icon:SetTexture(ART.icon) then icon:SetTexture(ART.iconFallback) end
+	-- Use the backup icon when the main file is missing (unknown paths get no or a
+	-- negative file ID), cropped so its square border stays inside the ring.
+	local iconMissing = false
+	if type(GetFileIDFromPath) == "function" then
+		local ok, id = pcall(GetFileIDFromPath, ART.icon)
+		iconMissing = ok and (type(id) ~= "number" or id <= 0)
+	end
+	if iconMissing or not icon:SetTexture(ART.icon) then
+		icon:SetTexture(ART.iconFallback)
+		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	end
 	icon:SetSize(17, 17)
 	icon:SetPoint("TOPLEFT", button, "TOPLEFT", 7, -6)
 	button.icon = icon
@@ -373,9 +435,14 @@ local function CreateMinimapButton()
 	button.offMark = mark
 
 	button:SetScript("OnClick", function(_, mouseButton)
-		if mouseButton == "LeftButton" then SetEnabled(not IsEnabled()) end
+		if mouseButton == "LeftButton" then
+			SetEnabled(not IsEnabled())
+		elseif mouseButton == "RightButton" then
+			PrintStatus()
+		end
 	end)
-	button:SetScript("OnEnter", ShowTooltip)
+	-- OnEnter's 2nd value is "motion", not fromMenu.
+	button:SetScript("OnEnter", function(self) ShowTooltip(self, false) end)
 	button:SetScript("OnLeave", HideTooltip)
 	button:SetScript("OnDragStart", function(self)
 		HideTooltip()
@@ -395,7 +462,7 @@ function OnlyFriends_CompartmentClick()
 end
 
 function OnlyFriends_CompartmentOnEnter(_, menuButton)
-	ShowTooltip(menuButton)
+	ShowTooltip(menuButton, true)
 end
 
 function OnlyFriends_CompartmentOnLeave()
@@ -411,12 +478,17 @@ local function OnEvent(self, event, ...)
 	elseif event == "PLAYER_LOGIN" then
 		InitDB()
 		CreateMinimapButton()
+		if not IsEnabled() then
+			Print("off (on all your characters) - all invites are shown as normal. Type /of on to turn it back on.")
+		end
 		self:UnregisterEvent("PLAYER_LOGIN")
 	elseif event == "PARTY_INVITE_REQUEST" then
+		pending = nil -- a new invite replaces any invite still waiting for the roster
 		if not IsEnabled() then return end
 		local name, _, _, _, _, _, _, inviterGUID, questSessionActive = ...
 		HandleInvite(name, inviterGUID, questSessionActive)
 	elseif event == "GROUP_INVITE_CONFIRMATION" then
+		joinFailed = {} -- a real event: try again, as before
 		ProcessJoinRequests(false)
 	elseif event == "GUILD_ROSTER_UPDATE" then
 		OnGuildRosterUpdate()
@@ -430,18 +502,23 @@ local function SlashHandler(msg)
 		SetEnabled(true)
 	elseif msg == "off" then
 		SetEnabled(false)
+	elseif msg == "toggle" then
+		SetEnabled(not IsEnabled())
 	elseif msg == "minimap" then
 		local mm = OnlyFriendsDB.minimap
 		mm.hide = not mm.hide
 		if mm.hide then
-			Print("minimap button hidden - /of minimap shows it again.")
+			local menu = AddonCompartmentFrame and " You can still turn the addon on/off in the addon menu." or ""
+			Print("minimap button hidden - /of minimap shows it again." .. menu)
 		else
 			if not button then CreateMinimapButton() end
 			Print("minimap button shown.")
 		end
 		UpdateButton()
+	elseif msg == "" then
+		PrintStatus()
 	else
-		Print((IsEnabled() and "on" or "off") .. ". Commands: /of on, /of off, /of minimap")
+		PrintHelp()
 	end
 end
 

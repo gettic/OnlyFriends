@@ -10,8 +10,11 @@ When someone invites you to a group, Only Friends checks who they are:
 
 - If they are **trusted**, nothing changes. You see the normal invite and can accept or decline.
 - If they are **not trusted**, the invite is declined for you and its window is closed. You get one chat line naming the player. Click the name to whisper or look them up.
+- If you lead a group, a request to join it ("Name requests to join your group", including Quick Join) from someone who is not trusted is declined too, with one chat line. Suggestions from your own group members ("X wants to invite Y") are left for you to answer.
 
-Example: `Only Friends: declined a party invite from [Name].`
+Examples:
+- `Only Friends: declined a party invite from [Name].`
+- `Only Friends: declined a request to join your group from [Name].`
 
 Nothing else is blocked. Whispers, trades and guild invites are not touched.
 
@@ -32,12 +35,27 @@ Party Sync invites from players who are not trusted are **not** declined. You on
 
 | Command | What it does |
 |---|---|
-| `/of` | Shows whether Only Friends is on or off |
+| `/of` | Shows whether Only Friends is on or off, and the commands |
 | `/of on` | Turns it on (this is the default) |
 | `/of off` | Turns it off, so all invites show as normal |
+| `/of minimap` | Hides or shows the minimap button |
 | `/onlyfriends` | Same as `/of` |
 
-The setting is saved for your whole account, so it is the same on all your characters.
+The on/off setting and the button position are saved for your whole account, so they are the same on all your characters.
+
+## Minimap button
+
+| Action | What happens |
+|---|---|
+| Left-click | Turns Only Friends on or off |
+| Drag | Moves the button round the minimap (the position is saved) |
+| Hover | The tooltip says "On" or "Off" |
+
+When it is off, the icon is greyed out with a red X. `/of minimap` hides or shows the button.
+
+If your game shows Blizzard's addon menu on the minimap, Only Friends is in it too; left-click there turns it on or off.
+
+Your on/off setting from earlier versions is kept.
 
 ## Installing
 
@@ -49,6 +67,8 @@ The setting is saved for your whole account, so it is the same on all your chara
 - The invite **sound** and the **taskbar flash** still happen, because the game plays them before the addon can step in. The invite window itself is closed right away.
 - Right after logging in, your guild list may not have loaded yet. Then the addon waits up to 3 seconds for it before deciding, so an invite from a guildmate is not declined by mistake. The invite window can stay up for that moment.
 - If the guild list still hasn't loaded after those 3 seconds, the invite is declined.
+- If you are already in a group, an invite from a stranger never shows as a popup (the game only prints a chat line), so there is nothing to decline.
+- If a join request can't be declined, you get a chat note and the request stays for you to answer.
 - An invite with no readable name or player ID is declined.
 - If someone keeps inviting you, you get one chat line per player every 10 seconds, not one per invite.
 
